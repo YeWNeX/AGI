@@ -1,0 +1,215 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>AGI Giants Dialogue</title>
+<style>
+  body{font-family:Inter,Arial;background:#0b0f14;color:#c9d4e3;padding:16px}
+  textarea, input, select{
+      width:100%;
+      padding:8px;
+      margin:6px 0;
+      border-radius:6px;
+      background:#071019;
+      color:#cfe;
+  }
+  button{
+      padding:8px 12px;
+      border-radius:6px;
+      background:#00e5a8;
+      border:none;
+      color:#031418;
+      cursor:pointer;
+      margin:6px 6px 6px 0
+  }
+  .box{background:#071019;padding:12px;border-radius:8px;border:1px solid #1f2a38;margin-bottom:12px}
+  pre{white-space:pre-wrap}
+  .providers-grid{display:flex;flex-wrap:wrap;gap:10px}
+  .provider-item{background:#0f1a26;padding:6px 10px;border-radius:6px;border:1px solid #1f2a38;display:flex;align-items:center}
+  .provider-item input{margin-right:6px}
+</style>
+</head>
+<body>
+  <h2>AGI Giants Dialogue</h2>
+  <p>Each question is debated by giants, you get their final word.</p>
+
+  <div class="box">
+    <label>Session ID<br/><input id="session" value="giants_sess"/></label>
+
+    <label>Providers (tick who joins the dialogue)</label>
+    <div id="providersBox" class="providers-grid"></div>
+
+    <label>Editor (who gives the final answer)<br/>
+      <select id="editor"></select>
+    </label>
+
+    <label>Query<br/><textarea id="query" rows="4">Explain token bucket algorithm in simple terms.</textarea></label>
+    <button id="run">Ask Giants</button>
+    <button id="roundtable">Ask with Roundtable</button>
+  </div>
+
+  <div class="box">
+    <h3>Upload File + Comment</h3>
+    <input type="file" id="fileInput"/>
+    <textarea id="fileComment" rows="3" placeholder="Add comment about the file (image, audio, DB, text, code, etc.)"></textarea>
+    <div id="fileInfo"></div>
+  </div>
+
+  <div class="box">
+    <h3>Raw Replies (with timestamp)</h3>
+    <div id="raw"></div>
+  </div>
+
+  <div class="box">
+    <h3>Roundtable Discussion</h3>
+    <pre id="roundtable_out"></pre>
+  </div>
+
+  <div class="box">
+    <h3>Final Answer (Editor)</h3>
+    <pre id="final"></pre>
+    <button id="saveCode">Save code to file</button>
+    <div id="saveStatus"></div>
+  </div>
+
+<script>
+const run = document.getElementById('run');
+const roundBtn = document.getElementById('roundtable');
+const rawDiv = document.getElementById('raw');
+const final = document.getElementById('final');
+const roundOut = document.getElementById('roundtable_out');
+const providersBox = document.getElementById('providersBox');
+const editorSelect = document.getElementById('editor');
+const fileInput = document.getElementById('fileInput');
+const fileInfo = document.getElementById('fileInfo');
+const saveBtn = document.getElementById('saveCode');
+const saveStatus = document.getElementById('saveStatus');
+
+let uploadedFileName = null;
+
+// Upload file immediately when selected
+fileInput.addEventListener("change", async ()=>{
+    if(fileInput.files.length>0){
+        const file = fileInput.files[0];
+        fileInfo.textContent = "Uploading: " + file.name;
+        const formData = new FormData();
+        formData.append("file", file);
+        try {
+            const resp = await fetch("http://127.0.0.1:8080/upload", {method:"POST", body:formData});
+            const j = await resp.json();
+            if(j.filename){
+                uploadedFileName = j.filename;
+                fileInfo.textContent = "Uploaded: " + j.filename;
+                document.getElementById('fileComment').value = j.summary || "";
+            } else {
+                fileInfo.textContent = "Upload failed";
+            }
+        } catch(e){
+            fileInfo.textContent = "Upload error: " + e.message;
+        }
+    } else {
+        fileInfo.textContent = "";
+        uploadedFileName = null;
+    }
+});
+
+// Fetch providers
+async function fetchProviders() {
+    try {
+        const resp = await fetch('http://127.0.0.1:8080/providers');
+        const data = await resp.json();
+        const allProviders = [...(data.tgpt_providers||[]), ...(data.ollama_models||[])];
+
+        providersBox.innerHTML = "";
+        allProviders.forEach(p=>{
+            const div = document.createElement("div");
+            div.className = "provider-item";
+            div.innerHTML = `<label><input type="checkbox" value="${p}"> ${p}</label>`;
+            providersBox.appendChild(div);
+        });
+
+        editorSelect.innerHTML = "";
+        allProviders.forEach(p=>{
+            const opt = document.createElement("option");
+            opt.value = p;
+            opt.textContent = p;
+            editorSelect.appendChild(opt);
+        });
+    } catch(e){
+        console.warn("Could not fetch providers:", e);
+        providersBox.innerHTML = "<div>Error loading providers</div>";
+        editorSelect.innerHTML = "<option disabled>Error</option>";
+    }
+}
+fetchProviders();
+
+function getSelectedProviders(){
+    return Array.from(providersBox.querySelectorAll("input[type=checkbox]:checked"))
+                .map(cb=>cb.value);
+}
+
+async function callEndpoint(url){
+    rawDiv.innerHTML = ""; final.textContent = "Working..."; roundOut.textContent = "";
+
+    const session = document.getElementById('session').value || "giants_sess";
+    const providers = getSelectedProviders();
+    if(providers.length===0){
+        alert("Please select at least one provider.");
+        return;
+    }
+    const editor = editorSelect.value || providers[0];
+    const query = document.getElementById('query').value;
+    const fileComment = document.getElementById('fileComment').value;
+
+    const payload = {
+        session_id: session,
+        providers: providers,
+        editor: editor,
+        query: query,
+        file_comment: fileComment,
+        filename: uploadedFileName
+    };
+
+    try {
+        const r = await fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const j = await r.json();
+        if (j.error){ final.textContent = "Error: " + j.error; return; }
+        rawDiv.innerHTML = "";
+        (j.raw_replies || []).forEach(rr=>{
+            const el = document.createElement('div');
+            el.innerHTML = `<b>[${rr.provider}]</b> (timestamp ${rr.timestamp})<pre>${rr.reply}</pre>`;
+            rawDiv.appendChild(el);
+        });
+        if (j.roundtable) roundOut.textContent = j.roundtable;
+        final.textContent = j.final_answer || "(no final answer)";
+    } catch (e){
+        final.textContent = "Fetch error: " + e.message;
+    }
+}
+
+// Save code button
+saveBtn.addEventListener("click", async ()=>{
+    const code = final.textContent.trim();
+    if(!code){ saveStatus.textContent="No final answer to save."; return; }
+    try {
+        const r = await fetch("http://127.0.0.1:8080/save_code", {
+            method:"POST",
+            headers: {"Content-Type":"application/json"},
+            body: JSON.stringify({code: code})
+        });
+        const j = await r.json();
+        saveStatus.textContent = j.message || "Saved.";
+    } catch(e){
+        saveStatus.textContent = "Save error: " + e.message;
+    }
+});
+
+run.addEventListener('click', ()=>callEndpoint('http://127.0.0.1:8080/giants'));
+roundBtn.addEventListener('click', ()=>callEndpoint('http://127.0.0.1:8080/giants_roundtable'));
+</script>
+</body>
+</html>
