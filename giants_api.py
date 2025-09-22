@@ -1,4 +1,5 @@
-# giants_api.py  (UPDATED WITH MariaDB + Upload)
+# giants_api.py  (UPDATED WITH MariaDB + Upload + Save Code + Detailed Editor)
+
 import os
 import json
 import csv
@@ -37,7 +38,8 @@ DB_CONFIG = {
     "host": "localhost",
     "user": "chatbot",
     "password": "strongpassword",
-    "database": "giants"
+    "database": "giants",
+    "charset": "utf8mb4"   # 🟢 Fix Arabic insert issues
 }
 
 def get_db_conn():
@@ -185,10 +187,8 @@ def build_brainstorm_prompt_from_replies(original_query: str, replies, file_comm
             examples += 1
     lines.append("")
     lines.append("Task: Produce two outputs:")
-    lines.append("1) A short roundtable transcript (3-6 brief turns) where experts comment on each other's key points.")
-    lines.append("2) A concise final answer (1-6 sentences) that synthesizes and cites key providers.")
-    lines.append("")
-    lines.append("Keep the transcript focused, concise, and avoid repeating full replies verbatim.")
+    lines.append("1) A roundtable transcript (3-6 brief turns) where experts comment on each other's key points.")
+    lines.append("2) A detailed final answer (multi-paragraph, structured, clear) that integrates all useful details without duplication.")
     return "\n".join(lines)
 
 # -------------------- FLASK APP --------------------
@@ -267,10 +267,10 @@ def giants_roundtable():
     if editor and editor.strip().lower() in normalized:
         editor_model = normalized[editor.strip().lower()]
         roundtable_text = query_ollama(editor_model, compact_prompt)
-        final_answer = query_ollama(editor_model, f"Synthesize a concise final answer for the user.\n\nContext:\n{compact_prompt}\n\nRoundtable transcript:\n{roundtable_text}")
+        final_answer = query_ollama(editor_model, f"Write a detailed final answer that integrates all useful details from the discussion without duplicating text.\n\nContext:\n{compact_prompt}\n\nRoundtable transcript:\n{roundtable_text}")
     elif editor in VALID_TGPT_PROVIDERS:
         roundtable_text = query_tgpt(editor, compact_prompt)
-        final_answer = query_tgpt(editor, f"Synthesize a concise final answer for the user.\n\nContext:\n{compact_prompt}\n\nRoundtable transcript:\n{roundtable_text}")
+        final_answer = query_tgpt(editor, f"Write a detailed final answer that integrates all useful details from the discussion without duplicating text.\n\nContext:\n{compact_prompt}\n\nRoundtable transcript:\n{roundtable_text}")
     else:
         roundtable_text = "\n".join([f"{r['provider']}: {summarize_text(r['reply'],200)}" for r in initial_replies])
         final_answer = initial_replies[0]["reply"] if initial_replies else "(no reply)"
@@ -281,7 +281,7 @@ def giants_roundtable():
         to_save.append({"timestamp": _now_str(), "provider": "roundtable", "message": roundtable_text})
         append_dataset_lines(fp, session_id, save_format, to_save)
 
-    # 🟢 Save DB final roundtable
+    # 🟢 Save DB final roundtable + editor
     save_to_db(session_id, "roundtable", query, roundtable_text)
     save_to_db(session_id, "editor", query, final_answer)
 
@@ -319,6 +319,19 @@ def upload_file():
         summary = f"Could not parse file: {e}"
 
     return jsonify({"filename": filename, "summary": summary})
+
+# 🟢 NEW: Save code endpoint
+@app.route("/save_code", methods=["POST"])
+def save_code():
+    data = request.get_json(force=True) or {}
+    code_content = data.get("code")
+    filename = data.get("filename", f"code_{int(time.time())}.txt")
+    if not code_content:
+        return jsonify({"error": "No code provided"}), 400
+    filepath = DATASET_DIR / filename
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(code_content)
+    return jsonify({"saved": str(filepath)})
 
 @app.route("/providers", methods=["GET"])
 def providers_list():
